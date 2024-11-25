@@ -3,14 +3,15 @@ const path = require('path');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
+const mongoose = require('mongoose'); // MongoDB
 
 // Créer une application Express
 const app = express();
 const server = http.createServer(app);
 
-// Configurer CORS pour accepter les connexions depuis localhost
+// Configurer CORS
 app.use(cors({
-    origin: "http://localhost", // Permet les connexions depuis http://localhost (votre serveur Apache)
+    origin: "http://localhost:3000", // URL de ton frontend
     methods: ["GET", "POST"],
     credentials: true
 }));
@@ -18,11 +19,32 @@ app.use(cors({
 // Créer le serveur socket.io avec le serveur HTTP
 const io = socketIo(server, {
     cors: {
-        origin: "http://localhost",  // Autoriser le chat depuis http://localhost
+        origin: "http://localhost:3000",  // L'URL de ton frontend
         methods: ["GET", "POST"],
         credentials: true
     }
 });
+
+// Connexion à MongoDB
+mongoose.connect('mongodb://localhost:27017/chatApp', {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+}).then(() => {
+    console.log('Connecté à MongoDB');
+}).catch(err => {
+    console.error('Erreur de connexion à MongoDB:', err);
+});
+
+// Définir un schéma pour les messages
+const messageSchema = new mongoose.Schema({
+    event_id: String,   // ID de l'événement
+    username: String,   // Nom d'utilisateur
+    message: String,    // Contenu du message
+    timestamp: { type: Date, default: Date.now } // Horodatage
+});
+
+// Modèle pour les messages
+const Message = mongoose.model('Message', messageSchema);
 
 // Servir les fichiers statiques du dossier 'chat-temps-reel'
 app.use(express.static(path.join(__dirname, 'chat-temps-reel')));
@@ -31,14 +53,25 @@ io.on('connection', (socket) => {
     console.log('Un utilisateur est connecté');
 
     // Rejoindre une salle spécifique à un événement
-    socket.on('joinEvent', (event_id) => {
+    socket.on('joinEvent', async (event_id) => {
         socket.join(event_id); // L'utilisateur rejoint la salle de l'événement
         console.log(`Utilisateur a rejoint l'événement ${event_id}`);
+
+        // Charger les messages existants pour cet événement depuis MongoDB
+        const messages = await Message.find({ event_id }).sort({ timestamp: 1 });
+        socket.emit('loadMessages', messages); // Envoyer les messages existants au nouvel utilisateur
     });
 
     // Recevoir un message et l'envoyer à la salle de l'événement
-    socket.on('message', (data) => {
-        io.to(data.event_id).emit('message', data.message); // Message envoyé dans la salle de l'événement
+    socket.on('message', async (data) => {
+        const { event_id, username, message } = data;
+
+        // Enregistrer le message dans MongoDB
+        const newMessage = new Message({ event_id, username, message });
+        await newMessage.save();
+
+        // Diffuser le message dans la salle de l'événement
+        io.to(event_id).emit('message', { username, message, timestamp: newMessage.timestamp });
     });
 
     // Déconnexion
@@ -51,3 +84,4 @@ io.on('connection', (socket) => {
 server.listen(4001, () => {
     console.log('Serveur lancé sur http://localhost:4001');
 });
+
